@@ -1,0 +1,563 @@
+﻿/**************************************************************************************************
+Description.. :	Update a selected scheduler with the execution date/time
+				according to its type
+
+Parameters... :	- SCHEDCODE - scheduler code
+				- sSkip ("Y"/"N") : skip or not off-set configurations
+				- strDateFormat: string date format
+				- ReturnNextExecuteDate ("Y"/"N"): return or not the 
+						next execution date calculated by the scheduler
+
+Returns...... :	- .T. : when the function ran successfully
+				- .F. : when the scheduler code does not exist
+				- Following array when parameter ReturnNextExecuteDate = "Y":
+					{	EXECDATETIME (datetime): next execution date
+						EXECUTEDATE (string): next execution date
+					 } 
+Author....... :	
+Date......... : 
+_______________________________________________________________________________
+
+Ticket#...... : 1346389 - Scheduler system hourly does not work properly 
+Modification. : Modified Hourly sections
+				- Hour period : redo the calculations to add right number of hours for next schedule
+				- Every hour : find the last scheduled time to substract it from date 
+						in order to then add the time requested for next schedule 
+						-> ex. schedule every hour @ 9PM & 11PM 
+						.	last schedule was 9PM and last execution date was date/9:00:00PM
+								next schedule wanted : date-9:00:00PM + 11:00:00PM 
+							instead of just adding requested scheduled hour to current 
+								execution date/time which was setting next schedule time 
+								to 9:00:00PM + 11:00:00PM
+Author....... :	MARLENED
+Date......... :	2008-12-12
+_______________________________________________________________________________
+
+Ticket # .... : Z00000404B0527 - EM Scheduler start date being updated by the system
+Modification. : Remove the STARTDATE when updating SCHEDULER for hourly schedules
+Author....... :	Fabiola Tang
+Date......... :	2010-11-03
+_______________________________________________________________________________
+
+Ticket # .... : Z00000332B2523 - Equipment Calibration Problem
+Modification. : Corrected next date calculation for monthly schedules, for months # > 12
+Author....... :	Teodora Maftei
+Date......... :	2011-01-21
+_______________________________________________________________________________
+Ticket # .... : Z00000332B2602 - Problem scheduling using hours
+Modification. : Corrected way to calculate next execution date when scheduler sub type
+					is HourPeriod and EveryHour					
+Author....... :	Fabiola Tang
+Date......... :	2011-02-22
+_______________________________________________________________________________
+Ticket # .... : Z00000332B1008 - Scheduled events going wrong
+Modification. : Added a parameter to set a base execution date. If set, the 
+				scheduler will schedule the next event based on that value.
+				This is useful for manual running of scheduled events that can 
+				be executed manually multiple times between each scheduled 
+				event.
+Author....... :	MICHELR
+Date......... :	2011-10-27
+_______________________________________________________________________________
+**************************************************************************************************;
+
+:PARAMETERS SCHEDCODE, sSkip, strDateFormat, ReturnNextExecuteDate, dBaseExecutionDate;
+:DEFAULT SCHEDCODE, 205;
+:DEFAULT sSkip, "N";
+:DEFAULT strDateFormat, "MM/DD/YYYY";
+:DEFAULT ReturnNextExecuteDate, .T.;
+:DEFAULT dBaseExecutionDate, NIL;
+ 
+:DECLARE pdskipDate, psSkipTime;
+:DECLARE aWeek, nLoop, aMonth, HourPeriod, EveryHour, EveryDay, DayPeriod, WeekPeriod,
+		 WeekDays, MonthDays, MonthPeriod, YearDay, YearPeriod;
+
+aWeek := {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
+nLoop := {"First","Second","Third","Fourth","Last"};
+aMonth := {"January","February","March","April","May","June","July","August","September","October","November","December"};
+
+HourPeriod := "HourPeriod";
+EveryHour := "OnEveryHour";
+
+EveryDay := "OnEveryDay";
+DayPeriod := "DayPeriod";
+
+WeekPeriod := "OnEveryWeek";
+WeekDays := "WeekPeriod";
+
+MonthDays := "OnEveryMonth";
+MonthPeriod := "MonthPeriod";
+
+YearDay := "OnEveryYear";
+YearPeriod := "YearPeriod";
+
+:DECLARE shdHour, shdDay, shdWeek, shdMonth, shdYear;
+
+shdHour:= "Hour";
+shdDay := "Daily";
+shdWeek := "Weekly";
+shdMonth := "Monthly";
+shdYear := "Yearly";
+
+:DECLARE aData, ScheduleType, dStart, SubType, dFirstExecDate, Flag,sStart_time,sExexDate;
+
+aData := SQLExecute("Select TYPE, EXECUTEDATE, SUBTYPE, STARTDATE,Start_time from SCHEDULER Where SCHEDCODE = ?SCHEDCODE?"); 
+/*usrmes('aData',aData);
+:IF Len(aData) = 0;
+	:RETURN .F.;
+:ENDIF;
+ScheduleType := aData[1,1];
+:IF Empty(dBaseExecutionDate);
+	dStart := aData[1,2];
+:ELSE; 
+	dStart := dBaseExecutionDate;
+:ENDIF;
+
+SubType := aData[1,3];
+sStart_time := aData[1,5];
+sHour := LimsString(Hour(aData[1,4])) + ":" + Right("00" + AllTrim(LimsString(Minute(aData[1,4]))), 2);
+/*usrmes('SubType',SubType);
+/*usrmes('ScheduleType',ScheduleType);
+:BEGINCASE;
+
+:CASE ScheduleType == "RandomSample";
+	aData := SQLExecute("Select HOURPERIOD from SCHEDULER where SCHEDCODE = ?SCHEDCODE?");										
+	iHour := Val(SubStr(aData[1,1], 1, At(Chr(32), aData[1,1])));
+	iHourPeriod := iHour;
+	iStart := Val(SubStr(sHour, 1, At(Chr(58), sHour)));
+	dFirstExecDate := dStart;
+	iIndex := iStart + iHour;
+	iHour := iIndex;
+	:IF iIndex >= 24;
+		iHour := iIndex - 24;
+		/* used to set the date (day) of execution time ;
+		dFirstExecDate := dStart + 1;
+	:ENDIF;
+	
+	sHour := Right("00" + AllTrim(Str(iHour)), 2) + Chr(58) + "00";
+	strExecDateTime := LIMSDate(dFirstExecDate, "YYYYMMDD") + StrTran(sHour, Chr(58), "");
+			
+	iHourPeriod := iHourPeriod / 24.0;
+	SQLExecute("Update SCHEDULER set EXECUTEDATE = EXECUTEDATE + ?iHourPeriod?,
+				EXECDATETIME = ?strExecDateTime?
+				where SCHEDCODE = ?SCHEDCODE? ");
+:EXITCASE;
+
+
+:CASE ScheduleType = shdHour;
+	:DECLARE aHours, aLen, Cn, iIndex, iHour, iStart, iPrevPeriod, iTempHourError, iHourArrayIndex, arrTemp, 
+			nFirstExecTime;
+
+	:IF SubType = HourPeriod;		
+		aData := SQLExecute("Select HOURPERIOD from SCHEDULER where SCHEDCODE = ?SCHEDCODE?");										
+		iHour := Val(SubStr(aData[1,1], 1, At(Chr(32), aData[1,1])));
+		iHourPeriod := iHour;
+		iStart := Val(SubStr(sHour, 1, At(Chr(58), sHour)));
+		dFirstExecDate := dStart;
+		iIndex := iStart + iHour;
+		iHour := iIndex;
+	
+		:IF iIndex >= 24;
+			iHour := iIndex - 24;
+			/* used to set the date (day) of execution time ;
+			dFirstExecDate := dStart + 1;
+		:ENDIF;
+		
+		sHour := Right("00" + AllTrim(Str(iHour)), 2) + Chr(58) + "00";
+		strExecDateTime := LIMSDate(dFirstExecDate, "YYYYMMDD") + StrTran(sHour, Chr(58), "");
+				
+		iHourPeriod := iHourPeriod / 24.0;
+		SQLExecute("Update SCHEDULER set EXECUTEDATE = EXECUTEDATE + ?iHourPeriod?,
+										EXECDATETIME = ?strExecDateTime?
+						where SCHEDCODE = ?SCHEDCODE? ");
+	:ENDIF;
+
+	:IF SubType = EveryHour;
+		aData := SQLExecute("Select ON_HOURS, 
+									ON_HOURS_INDEX, 
+									EXECUTEDATE
+							from SCHEDULER 
+							where SCHEDCODE = ?SCHEDCODE?");
+						
+		/*Just get date, ready to add hours;
+		dFirstExecDate :=  ServerStartOfDay(aData[1,3]);
+		
+		aHours := BuildArray(aData[1,1]);
+		iHourArrayIndex := Ascan(aHours, {|x| x == "0"});		
+
+		/* sort hours -> on 24 hres ;
+		arrTemp := {};
+		Dummy := AeVal(aHours, {|X| AaDd(arrTemp , Val(X))} );
+		ArrayCalc(arrTemp, "SORT");
+		aHours := {};
+		Dummy := AeVal(arrTemp, {|X| AaDd(aHours , AllTrim(Str(X)))} );
+		
+		iIndex := aData[1,2];
+		iPrevPeriod := iIndex;
+		nLen := Len(aHours);
+		iIndex := iIndex + 1;
+		/* go to next day when all scheduled hours have been done ;
+		:IF nLen < iIndex;
+			iIndex := 1;
+			dFirstExecDate := dFirstExecDate + 1;
+		:ENDIF;
+
+		iTempHourError :=  Val(aHours[iIndex]);
+		sHour := Right("00" + AllTrim(Str(iTempHourError)), 2) + Chr(58) + "00";
+		strExecDateTime := LIMSDate(dFirstExecDate, "YYYYMMDD") + StrTran(sHour, Chr(58), "");
+		
+		iHourPeriod := iTempHourError / 24.0;
+		
+		/*Need to add to date only, the specified set of hours;		
+		SQLExecute("Update SCHEDULER set 							
+							ON_HOURS_INDEX = ?iIndex?, 
+							EXECUTEDATE = (?dFirstExecDate? + ?iHourPeriod?),
+							EXECDATETIME = ?strExecDateTime? 
+					where SCHEDCODE = ?SCHEDCODE?");
+	:ENDIF;
+	
+:EXITCASE;
+
+:CASE ScheduleType = shdDay;
+	:IF SubType = EveryDay;
+		dStart := dStart + 1;
+		strExecDateTime := LIMSDate(dStart,"YYYYMMDD") + StrTran(sHour,"-","");
+		sExexDate := DoProc("ForMatExecDate",{dStart,sStart_time});
+		SQLExecute("Update SCHEDULER set EXECUTEDATE = ?sExexDate?, EXECDATETIME = ?strExecDateTime?
+					where SCHEDCODE = ?SCHEDCODE?");
+	:ELSE;
+		:DECLARE dEvery;
+	
+		aData := SQLExecute("Select DAYSPERIOD from SCHEDULER where SCHEDCODE = ?SCHEDCODE?");
+	
+		dEvery := aData[1,1];
+		dFirstExecDate := dStart + dEvery;
+		strExecDateTime := LIMSDate(dFirstExecDate,"YYYYMMDD") + StrTran(sHour,"-","");
+	    sExexDate := DoProc("ForMatExecDate",{dFirstExecDate,sStart_time});
+		SQLExecute("Update SCHEDULER set EXECUTEDATE = ?sExexDate?, EXECDATETIME = ?strExecDateTime?
+						where SCHEDCODE = ?SCHEDCODE?");
+	:ENDIF;
+:EXITCASE;
+
+:CASE ScheduleType = shdWeek;
+	:DECLARE wPeriod,wWeekDay;
+
+	aData := SQLExecute("Select WEEKPERIOD, WEEKDAYS, WEEKCURDAY from SCHEDULER where SCHEDCODE = ?SCHEDCODE? ");
+	wPeriod := aData[1,1];
+
+	:IF SubType = WeekPeriod;
+		:IF wPeriod > 1;
+			wPeriod := wPeriod;
+		:ENDIF;
+		dFirstExecDate := dStart + (wPeriod * 7);
+		strExecDateTime := LIMSDate(dFirstExecDate,"YYYYMMDD") + StrTran(sHour, Chr(58), "");
+		sExexDate := DoProc("ForMatExecDate",{dFirstExecDate,sStart_time});
+		SQLExecute("Update SCHEDULER set EXECUTEDATE = ?sExexDate?, EXECDATETIME = ?strExecDateTime?
+						where SCHEDCODE = ?SCHEDCODE?");
+	:ENDIF;
+
+	:IF SubType = WeekDays;
+		:DECLARE nDayStart,nSeek,sTmp,Cn;
+
+		wWeekDay := BuildArray(aData[1,2]);
+		aNextinList := Len(wWeekDay);
+		nCur := aData[1,3];
+
+		nCur := nCur + 1;
+
+		:IF nCur > aNextinList;
+			nCur := 1;
+		:ENDIF;
+			
+		wWeekDay := wWeekDay[nCur];
+			
+		nDayStart  := DoW(dStart);
+		nSeek := AScan(aWeek, {|x| x == wWeekDay});
+					
+		:IF nDayStart > nSeek;
+			nSeek := (7 - nDayStart) + nSeek;
+			wPeriod := wPeriod - 1;
+		:ELSE;
+			nSeek := nSeek - nDayStart;
+		:ENDIF;
+					
+		:IF nCur = 1;
+			dFirstExecDate  := dStart + nSeek + ( wPeriod * 7 );
+		:ELSE;
+			dFirstExecDate  := dStart + nSeek;
+		:ENDIF;
+					
+		strExecDateTime := LIMSDate(dFirstExecDate, "YYYYMMDD") + StrTran(sHour, '-', "");
+		sExexDate := DoProc("ForMatExecDate",{dFirstExecDate,sStart_time});
+		SQLExecute("Update SCHEDULER set EXECUTEDATE = ?sExexDate?, WEEKCURDAY = ?nCur?, EXECDATETIME = ?strExecDateTime?
+						where SCHEDCODE = ?SCHEDCODE?");
+			
+	:ENDIF;
+:EXITCASE;
+			
+:CASE ScheduleType = shdMonth;
+	:DECLARE mDays,mPeriod,mOcurence,mWeekDays,nCur;
+					
+	aData := SQLExecute("Select MONTHPERIOD, MONTHDAYS, MONTHCURDAY, MONTHOCURENCE, MONTHONWEEKDAY from SCHEDULER 
+									where SCHEDCODE = ?SCHEDCODE?");
+					
+	mPeriod := aData[1,1];
+	mDays := aData[1,2];
+	nCur := aData[1,3];
+	mOcurence := Alltrim(aData[1,4]);
+	mWeekDays := Alltrim(aData[1,5]);
+	
+	:IF SubType = MonthDays;
+		:DECLARE aDays, i;
+			
+		aDays := BuildArray(mDays);
+		
+		/*region Get position of day already executed;
+		:FOR i:=1 :TO Len(aDays);
+			:IF Val(aDays[i]) >= Day(dStart);
+				nCur := i;
+				:EXITFOR;
+			:ENDIF;
+		:NEXT;		
+		/*endregion;
+		
+		/*region Get position of next day to be executed;
+		nCur := nCur + 1;					
+		:IF nCur > Len(aDays);
+			nCur := 1;
+		:ENDIF;
+		/*endregion;
+			
+		/*first day of the month;
+		dFirstExecDate := dStart - (Day(dStart)-1);
+		
+		/*add 1 month, when starting with first selected day;	
+		:IF nCur == 1;
+			dFirstExecDate := DateAdd(dFirstExecDate, 1, "month");			
+		:ENDIF;
+		
+		/*add number of days;
+		dFirstExecDate := dFirstExecDate + (Val(aDays[nCur]) -1);	
+			
+		/*region When the selected day is a 30th or 31st, and some months do not have it;
+		:IF (	Day(dFirstExecDate) <> Val(aDays[nCur]) .and.
+				Day(dFirstExecDate) > 1
+			);
+			dFirstExecDate := dFirstExecDate - (Day(dFirstExecDate)-1);/*first day of the month;
+		:ENDIF;
+		/*endregion;
+		
+		strExecDateTime := LIMSDate(dFirstExecDate,"YYYYMMDD") + StrTran(sHour,"-","");
+		sExexDate := DoProc("ForMatExecDate",{dFirstExecDate,sStart_time});
+		SQLExecute("Update SCHEDULER set EXECUTEDATE = ?sExexDate?, MONTHCURDAY = ?nCur?, 
+									EXECDATETIME = ?strExecDateTime? where SCHEDCODE = ?SCHEDCODE?");		
+	:ENDIF;	
+				
+	:IF SubType = MonthPeriod;
+		:DECLARE nOcur,nSeek,nMonth,d1Date,nYear,nBeginWeekDay,nDelta,nDay2Add;
+			
+		nCnt := 1;
+		nMonth := Month(dStart) + mPeriod;
+		nYear := Year(dStart);
+		
+		:WHILE nMonth > 12;
+			nMonth := nMonth - 12;
+			nYear := nYear + 1;
+		:ENDWHILE;
+	
+		nSeek := AScan(aWeek, {|x| x == mWeekDays});
+		nOcur := AScan(nLoop, {|x| x == mOcurence});
+		
+		nDay2Add:=0;
+		
+		:BEGINCASE;
+			:CASE nOcur = 1;
+				nDay2Add := 0;
+			:EXITCASE;
+			:CASE nOcur = 2;
+				nDay2Add := 7;
+			:EXITCASE;
+			:CASE nOcur = 3;
+				nDay2Add := 14;
+			:EXITCASE;
+			:CASE nOcur = 4;
+				nDay2Add := 21;
+			:EXITCASE;
+			:CASE nOcur = 5;
+				nDay2Add := 21;
+			:EXITCASE;
+		:ENDCASE;			
+		
+		d1Date := dStart;
+		d1Date := DateAdd(d1Date, (nYear-Year(d1Date)), "year"); /*set correct year;
+		d1Date := DateAdd(d1Date, (nMonth-Month(d1Date)), "month"); /*set correct month;
+		d1Date := DateAdd(d1Date, (-Day(d1Date) + 1), "day"); /*set day to first day of month;				
+
+		nBeginWeekDay := DoW(d1Date);
+					
+		:IF nSeek >= nBeginWeekDay;
+			nDelta := nSeek - nBeginWeekDay;
+		:ELSE;
+			nDelta := (7 - nBeginWeekDay) + nSeek;
+		:ENDIF;
+		
+		dFirstExecDate := d1Date + nDelta + nDay2Add;	
+		
+		:IF Month(dFirstExecDate) = Month(dFirstExecDate + 7) .and. nOcur = 5;
+			dFirstExecDate := dFirstExecDate + 7;
+		:ENDIF;
+		
+		strExecDateTime := LIMSDate(dFirstExecDate,"YYYYMMDD") + StrTran(sHour,"-","");
+		sExexDate := DoProc("ForMatExecDate",{dFirstExecDate,sStart_time});
+		SQLExecute("Update SCHEDULER set EXECUTEDATE = ?sExexDate?, EXECDATETIME = ?strExecDateTime?
+						where SCHEDCODE = ?SCHEDCODE?");
+			
+	:ENDIF;
+:EXITCASE;
+			
+:CASE ScheduleType = shdYear;
+	:DECLARE yType,yDate,yOcurence,yWeekDay,yMonth;
+				
+	aData := SQLExecute("Select YEARONDATE, YEAROCURENCE, YEARWEEKDAY, YEARONMONTH from SCHEDULER
+							where SCHEDCODE = ?SCHEDCODE?");
+			
+	yDate := aData[1,1];
+	
+	:IF SubType = YearDay;
+		:DECLARE nMonth, nDay;
+		
+		nMonth := Month(yDate); /*get month to schedule;
+		nDay := Day(yDate);  /*get day to schedule;		
+		
+		dFirstExecDate := dStart;
+		dFirstExecDate := DateAdd(dFirstExecDate, 1, "year"); /*set correct year;
+		dFirstExecDate := DateAdd(dFirstExecDate, (nMonth-Month(dFirstExecDate)), "month"); /*set correct month;
+		dFirstExecDate := DateAdd(dFirstExecDate, (-Day(dFirstExecDate) + 1), "day"); /*set day to first day of month;	
+		dFirstExecDate := DateAdd(dFirstExecDate, nDay-1, "day"); /*set correct day;	
+
+		/*In case the selected day is a 30th or 31st;
+		:IF (	Day(dFirstExecDate) <> nDay .and. Day(dFirstExecDate) > 1	);
+			dFirstExecDate := dFirstExecDate - (Day(dFirstExecDate)-1);/*first day of the month;
+		:ENDIF;
+
+		strExecDateTime := LIMSDate(dFirstExecDate,"YYYYMMDD") + StrTran(sHour,"-","");	
+		sExexDate := DoProc("ForMatExecDate",{dFirstExecDate,sStart_time});			
+		SQLExecute("Update SCHEDULER set EXECUTEDATE = ?sExexDate?, EXECDATETIME = ?strExecDateTime?
+						where SCHEDCODE = ?SCHEDCODE?");
+	:ENDIF;
+			
+	:IF SubType = YearPeriod;
+		:DECLARE nYear,nMonth,nDay,dFromSeek;
+		:DECLARE nOcur,nSeek,nMonth,d1Date,nYear,nBeginWeekDay,nDelta,nDay2Add;
+			
+		yOcurence := aData[1,2];
+		yWeekDay  := aData[1,3];
+		yMonth    := aData[1,4];
+		nYear     := Year(dStart) + 1;
+		nMonth 	  := AScan(aMonth, {|x| x == yMonth});
+		nSeek     := AScan(aWeek, {|x| x == yWeekDay});
+		nOcur     := AScan(nLoop, {|x| x == yOcurence});
+			
+		:BEGINCASE;
+			:CASE nOcur = 1;
+				nDay2Add := 0;
+			:EXITCASE;
+			:CASE nOcur = 2;
+				nDay2Add := 7;
+			:EXITCASE;
+			:CASE nOcur = 3;
+				nDay2Add := 14;
+			:EXITCASE;
+			:CASE nOcur = 4;
+				nDay2Add := 21;
+			:EXITCASE;
+			:CASE nOcur = 5;
+				nDay2Add := 21;
+			:EXITCASE;
+		:ENDCASE;
+
+		d1Date := dStart;
+		d1Date := DateAdd(d1Date, (nYear-Year(d1Date)), "year"); /*set correct year;
+		d1Date := DateAdd(d1Date, (nMonth-Month(d1Date)), "month"); /*set correct month;
+		d1Date := DateAdd(d1Date, (-Day(d1Date) + 1), "day"); /*set day to first day of month;			
+		
+		nBeginWeekDay := DoW(d1Date);
+					
+		:IF nSeek >= nBeginWeekDay;
+			nDelta := nSeek - nBeginWeekDay;
+		:ELSE;
+			nDelta := (7 - nBeginWeekDay) + nSeek;
+		:ENDIF;
+					
+		dFirstExecDate := d1Date + nDelta + nDay2Add;
+		:IF Month(dFirstExecDate) = Month(dFirstExecDate + 7) .and. nOcur = 5;
+			dFirstExecDate := dFirstExecDate + 7;
+		:ENDIF;
+			
+		strExecDateTime := LIMSDate(dFirstExecDate,"YYYYMMDD") + StrTran(sHour,"-","");
+		sExexDate := DoProc("ForMatExecDate",{dFirstExecDate,sStart_time});			
+		SQLExecute("Update SCHEDULER set EXECUTEDATE = ?sExexDate?, EXECDATETIME = ?strExecDateTime?
+						where SCHEDCODE = ?SCHEDCODE?");
+	:ENDIF;
+:ENDCASE;
+
+:IF PrmCount()>3;
+      EXECDATETIME:=SQLExecute("Select  EXECDATETIME,EXECUTEDATE FROM SCHEDULER WHERE SCHEDCODE=?SCHEDCODE?");
+    :RETURN {EXECDATETIME[1,1],EXECDATETIME[1,2]};
+:ENDIF;
+
+
+/* first time, skip is Yes -> this will allow to check off-set configurations ;
+:IF sSkip = "Y";
+	Flag := .T.;
+
+	:WHILE Flag;
+		:IF Empty(psSkipTime);
+			:IF Empty(pdSkipDate);				
+				Flag := ExecFunction("EQUIPMENT_MANAGER.PastDue_Schedult_Item", {SCHEDCODE});
+			:ELSE;
+				Flag := ExecFunction("EQUIPMENT_MANAGER.PastDue_Schedult_Item", {SCHEDCODE, pdSkipDate});
+			:ENDIF;
+		:ELSE;
+			Flag := ExecFunction("EQUIPMENT_MANAGER.PastDue_Schedult_Item", {SCHEDCODE, pdSkipDate, psSkipTime});
+		:ENDIF;
+		
+		:IF .not. Flag;
+			:EXITWHILE;
+		:ELSE;
+			ExecFunction("EQUIPMENT_MANAGER.GetNextDate_Scheduler_Item", {SCHEDCODE, "N", strDateFormat});
+		:ENDIF;
+	:ENDWHILE;
+:ENDIF;
+
+ExecFunction("AUDIT.AddAuditRecord", 
+				{"SCHEDULER",
+					"SCHEDULER.ORIGSTS = 'A' and
+						SCHEDULER.SCHEDCODE = " + LimsString(schedCode),
+					"Edit",
+					"EditSchedule"});
+
+
+:RETURN .T.;
+
+
+:PROCEDURE ForMatExecDate;
+:PARAMETERS strFirstDate,sHour;
+:DECLARE strFirstDate,sHour,sHourType,strExecDate;
+:DECLARE strTime;
+         strExecDate := LIMSDate(strFirstDate,"YYYY-MM-DD");
+		 strHour := substr(sHour,1,at(chr(32),sHour));
+		 sHourType := substr(sHour,at(chr(32),sHour)+1);
+         :IF sHourType == "PM";
+		     strTime := substr(strHour,1,2);
+			 strTime := val(strTime) +12; 
+			 :IF strTime >=24;
+			 strTime:="00";
+			 :ENDIF;
+			 strTime := limsstring(strTime)+substr(strHour,3,3);
+			 strHour := strTime;
+		 :ENDIF;
+/*		usrmes('strExecDate',strExecDate);
+/*		usrmes('strHour',strHour);
+:RETURN strExecDate+" "+strHour+":00";
+:ENDPROC;
